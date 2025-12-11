@@ -1,0 +1,5 @@
+*.exe
+*.o
+*.log
+__pycache__/
+venv/
