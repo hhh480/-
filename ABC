@@ -1,0 +1,144 @@
+import numpy as np
+import time
+
+# ========== 工具函数 ==========
+def next_pow2(n):
+    p = 1
+    while p < n:
+        p *= 2
+    return p
+
+def pad_to(A, size):
+    """把矩阵扩充为 size×size 的方阵，右下补 0"""
+    if A.shape[0] == size and A.shape[1] == size:
+        return A
+    B = np.zeros((size, size), dtype=A.dtype)
+    B[:A.shape[0], :A.shape[1]] = A
+    return B
+
+def unpad(A, shape):
+    """从方阵中截取原始大小"""
+    return A[:shape[0], :shape[1]]
+
+def is_close(A, B, tol=1e-8):
+    """判断两个矩阵是否近似相等"""
+    return np.allclose(A, B, atol=tol, rtol=0)
+
+# ==========  Naive Strassen ==========
+def naive_strassen(A, B, leaf=64):
+    n = A.shape[0]
+    if n <= leaf:
+        return A @ B
+    m = n // 2
+    A11, A12, A21, A22 = A[:m,:m], A[:m,m:], A[m:,:m], A[m:,m:]
+    B11, B12, B21, B22 = B[:m,:m], B[:m,m:], B[m:,:m], B[m:,m:]
+    M1 = naive_strassen(A11 + A22, B11 + B22, leaf)
+    M2 = naive_strassen(A21 + A22, B11, leaf)
+    M3 = naive_strassen(A11, B12 - B22, leaf)
+    M4 = naive_strassen(A22, B21 - B11, leaf)
+    M5 = naive_strassen(A11 + A12, B22, leaf)
+    M6 = naive_strassen(A21 - A11, B11 + B12, leaf)
+    M7 = naive_strassen(A12 - A22, B21 + B22, leaf)
+    C = np.zeros((n, n), dtype=A.dtype)
+    C[:m,:m] = M1 + M4 - M5 + M7
+    C[:m,m:] = M3 + M5
+    C[m:,:m] = M2 + M4
+    C[m:,m:] = M1 - M2 + M3 + M6
+    return C
+
+# ========== 2️⃣ AB Strassen（打包加法）==========
+def ab_strassen(A, B, leaf=64):
+    n = A.shape[0]
+    if n <= leaf:
+        return A @ B
+    m = n // 2
+    A11, A12, A21, A22 = A[:m,:m], A[:m,m:], A[m:,:m], A[m:,m:]
+    B11, B12, B21, B22 = B[:m,:m], B[:m,m:], B[m:,:m], B[m:,m:]
+    # 模拟“打包阶段加法”，直接合并线性组合
+    P1 = (A11 + A22) @ (B11 + B22)
+    P2 = (A21 + A22) @ B11
+    P3 = A11 @ (B12 - B22)
+    P4 = A22 @ (B21 - B11)
+    P5 = (A11 + A12) @ B22
+    P6 = (A21 - A11) @ (B11 + B12)
+    P7 = (A12 - A22) @ (B21 + B22)
+    C = np.zeros((n, n), dtype=A.dtype)
+    C[:m,:m] = P1 + P4 - P5 + P7
+    C[:m,m:] = P3 + P5
+    C[m:,:m] = P2 + P4
+    C[m:,m:] = P1 - P2 + P3 + P6
+    return C
+
+# ========== 3️⃣ ABC Strassen（完全嵌入加法）==========
+def abc_strassen_inplace(A, B, leaf=64):
+    C = np.zeros_like(A)
+    _abc_rec(A, B, C, leaf)
+    return C
+
+def _abc_rec(A, B, C, leaf):
+    n = A.shape[0]
+    if n <= leaf:
+        C += A @ B
+        return
+    m = n // 2
+    A11, A12, A21, A22 = A[:m,:m], A[:m,m:], A[m:,:m], A[m:,m:]
+    B11, B12, B21, B22 = B[:m,:m], B[:m,m:], B[m:,:m], B[m:,m:]
+    C11, C12, C21, C22 = C[:m,:m], C[:m,m:], C[m:,:m], C[m:,m:]
+    # M1
+    M1 = np.zeros((m, m), dtype=A.dtype)
+    _abc_rec(A11 + A22, B11 + B22, M1, leaf)
+    # M2
+    M2 = np.zeros((m, m), dtype=A.dtype)
+    _abc_rec(A21 + A22, B11, M2, leaf)
+    # M3
+    M3 = np.zeros((m, m), dtype=A.dtype)
+    _abc_rec(A11, B12 - B22, M3, leaf)
+    # M4
+    M4 = np.zeros((m, m), dtype=A.dtype)
+    _abc_rec(A22, B21 - B11, M4, leaf)
+    # M5
+    M5 = np.zeros((m, m), dtype=A.dtype)
+    _abc_rec(A11 + A12, B22, M5, leaf)
+    # M6
+    M6 = np.zeros((m, m), dtype=A.dtype)
+    _abc_rec(A21 - A11, B11 + B12, M6, leaf)
+    # M7
+    M7 = np.zeros((m, m), dtype=A.dtype)
+    _abc_rec(A12 - A22, B21 + B22, M7, leaf)
+    # 直接更新结果矩阵的各个子块
+    C11 += M1 + M4 - M5 + M7
+    C12 += M3 + M5
+    C21 += M2 + M4
+    C22 += M1 - M2 + M3 + M6
+
+# ========== 测试与基准 ==========
+def benchmark(func, A, B, repeats=3):
+    times = []
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        C = func(A, B)
+        t1 = time.perf_counter()
+        times.append(t1 - t0)
+    return np.mean(times), C
+
+if __name__ == "__main__":
+    np.random.seed(0)
+    sizes = [64, 128, 256]  #  512, 1024
+    for n in sizes:
+        print(f"\n=== 矩阵大小: {n}x{n} ===")
+        A = np.random.randn(n, n)
+        B = np.random.randn(n, n)
+        p = next_pow2(n)
+        # baseline
+        t_np, C_np = benchmark(lambda X, Y: X @ Y, A, B)
+        # naive
+        t_naive, C_naive = benchmark(lambda X, Y: unpad(naive_strassen(pad_to(X, p), pad_to(Y, p), leaf=32), (n, n)), A, B)
+        # ab
+        t_ab, C_ab = benchmark(lambda X, Y: unpad(ab_strassen(pad_to(X, p), pad_to(Y, p), leaf=32), (n, n)), A, B)
+        # abc
+        t_abc, C_abc = benchmark(lambda X, Y: unpad(abc_strassen_inplace(pad_to(X, p), pad_to(Y, p), leaf=32), (n, n)), A, B)
+        # 输出结果
+        print(f"NumPy matmul: {t_np:.4f}s")
+        print(f"Naive Strassen: {t_naive:.4f}s (正确性:{is_close(C_np, C_naive)})")
+        print(f"AB Strassen: {t_ab:.4f}s (正确性:{is_close(C_np, C_ab)})")
+        print(f"ABC Strassen: {t_abc:.4f}s (正确性:{is_close(C_np, C_abc)})")
